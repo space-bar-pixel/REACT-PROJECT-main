@@ -1,11 +1,48 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import "../../App.css";
 
 export default function AuthPage() {
     const navigate = useNavigate();
     const [isSignUpActive, setIsSignUpActive] = useState(false);
-    const [isLoading, setIsLoading] = useState(false); 
+    const [isLoading, setIsLoading] = useState(false);
+    const [isChecking, setIsChecking] = useState(true);
+
+    const API = import.meta.env.VITE_API_URL;
+
+    useEffect(() => {
+        const checkAuth = async () => {
+            try {
+                if (!API) {
+                    console.warn("API URL not configured");
+                    setIsChecking(false);
+                    return;
+                }
+
+                const response = await fetch(`${API}/api/me`, {
+                    method: "GET",
+                    credentials: "include",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                });
+
+                if (response.ok) {
+                    const user = await response.json();
+                    console.log("User already authenticated:", user);
+                    navigate("/home", { replace: true });
+                } else {
+                    console.log("User not authenticated, showing login page");
+                    setIsChecking(false);
+                }
+            } catch (err) {
+                console.error("Auth check failed:", err);
+                setIsChecking(false);
+            }
+        };
+
+        checkAuth();
+    }, [API, navigate]); 
 
     const [username, setUsername] = useState("");
     const [signUpEmail, setSignUpEmail] = useState("");
@@ -19,8 +56,6 @@ export default function AuthPage() {
 
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
     const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-
-    const API = import.meta.env.VITE_API_URL;
 
     const handleSignUp = async (e) => {
         e.preventDefault();
@@ -41,7 +76,7 @@ export default function AuthPage() {
         setIsLoading(true);
 
         try {
-            const response = await fetch(`${API}/signup`, {
+            const response = await fetch(`${API}/api/signup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
@@ -86,7 +121,7 @@ export default function AuthPage() {
         setIsLoading(true);
 
         try {
-            const response = await fetch(`${API}/signin`, {
+            const response = await fetch(`${API}/api/signin`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "include",
@@ -112,6 +147,10 @@ export default function AuthPage() {
             setIsLoading(false);
         }
     };
+
+    if (isChecking) {
+        return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>Loading...</div>;
+    }
 
     return (
         <div className={`container ${isSignUpActive ? "active" : ""}`}>

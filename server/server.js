@@ -34,13 +34,11 @@ const allowedOrigin = process.env.CLIENT_URL || 'http://localhost';
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) {
         callback(null, true);
         return;
       }
       
-      // In development, allow localhost with any port
       if (process.env.NODE_ENV !== 'production') {
         if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
           callback(null, true);
@@ -48,7 +46,6 @@ app.use(
         }
       }
       
-      // In production, check against allowed origin
       if (origin === allowedOrigin) {
         callback(null, true);
         return;
@@ -64,13 +61,26 @@ app.use(
 
 let db;
 
-async function initDb(retries = 10, delay = 3000) {
+async function initDb(retries = 20, delay = 5000) {
   for (let i = 0; i < retries; i++) {
     try {
+      const tempDb = mysql.createPool({
+        host: process.env.DB_HOST,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASS || '',
+        waitForConnections: true,
+        connectionLimit: 1,
+        queueLimit: 0,
+      });
+
+      const createDbSql = `CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME}`;
+      await tempDb.query(createDbSql);
+      await tempDb.end();
+      
       db = mysql.createPool({
         host: process.env.DB_HOST,
         user: process.env.DB_USER,
-        password: process.env.DB_PASS,
+        password: process.env.DB_PASS || '',
         database: process.env.DB_NAME,
         waitForConnections: true,
         connectionLimit: Number(process.env.DB_POOL_LIMIT) || 10,
@@ -78,7 +88,7 @@ async function initDb(retries = 10, delay = 3000) {
       });
 
       const [RESAULT] = await db.query('SELECT 1');
-      console.log('MySQL connected successfully');
+      console.log('MySQL connected successfully on attempt', i + 1);
 
       const createUsersSql = `
         CREATE TABLE IF NOT EXISTS users (
@@ -91,12 +101,30 @@ async function initDb(retries = 10, delay = 3000) {
       `;
 
       await db.query(createUsersSql);
-      console.log('MySQL pool created and users table ready');
+      
+      const createProfilesSql = `
+        CREATE TABLE IF NOT EXISTS profiles (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL UNIQUE,
+          profile_image LONGTEXT,
+          twitter VARCHAR(255),
+          instagram VARCHAR(255),
+          linkedin VARCHAR(255),
+          github VARCHAR(255),
+          bio TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      `;
+
+      await db.query(createProfilesSql);
+      console.log('MySQL pool created and tables ready');
       return;
     } catch (err) {
       console.error(`DB connection attempt ${i + 1}/${retries} failed:`, err.message);
       if (i < retries - 1) {
-        console.log(`Retrying in ${delay / 1000}s...`);
+        console.log(`Retrying in ${delay / 1000}s... (${(retries - i - 1)} attempts remaining)`);
         await new Promise((r) => setTimeout(r, delay));
       } else {
         throw err;
@@ -126,7 +154,6 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// small wrapper to catch async errors
 const wrap = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
@@ -203,9 +230,72 @@ app.get(
 
 // LOGOUT ROUTE
 app.post('/api/logout', (req, res) => {
-  res.clearCookie('token', { path: '/', sameSite: process.env.COOKIE_SAMESITE || 'Lax', secure: process.env.NODE_ENV === 'production' });
+  res.clearCookie('token', {
+    path: '/',
+    sameSite: process.env.COOKIE_SAMESITE || 'Lax',
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+  });
   res.json({ message: 'Logged out' });
 });
+
+// GET USER PROFILE
+app.get(
+  '/api/profile',
+  authenticateToken,
+  wrap(async (req, res) => {
+    const sql = 'SELECT * FROM profiles WHERE user_id = ?';
+    const [results] = await db.query(sql, [req.user.id]);
+    
+    if (!results || results.length === 0) {
+      return res.json({
+        user_id: req.user.id,
+        profile_image: null,
+        twitter: '',
+        instagram: '',
+        linkedin: '',
+        github: '',
+        bio: '',
+      });
+    }
+    
+    res.json(results[0]);
+  })
+);
+
+// UPDATE USER PROFILE
+app.put(
+  '/api/profile',
+  authenticateToken,
+  wrap(async (req, res) => {
+    const { profile_image, twitter, instagram, linkedin, github, bio } = req.body || {};
+    const userId = req.user.id;
+
+    // Check if profile exists
+    const [existing] = await db.query('SELECT id FROM profiles WHERE user_id = ?', [userId]);
+
+    if (existing && existing.length > 0) {
+      // Update existing profile
+      const sql = `
+        UPDATE profiles 
+        SET profile_image = ?, twitter = ?, instagram = ?, linkedin = ?, github = ?, bio = ?
+        WHERE user_id = ?
+      `;
+      const params = [profile_image || null, twitter || '', instagram || '', linkedin || '', github || '', bio || '', userId];
+      await db.query(sql, params);
+    } else {
+      // Create new profile
+      const sql = `
+        INSERT INTO profiles (user_id, profile_image, twitter, instagram, linkedin, github, bio)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+      const params = [userId, profile_image || null, twitter || '', instagram || '', linkedin || '', github || '', bio || ''];
+      await db.query(sql, params);
+    }
+
+    res.json({ message: 'Profile updated successfully' });
+  })
+);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
